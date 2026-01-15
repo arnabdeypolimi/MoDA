@@ -1310,7 +1310,7 @@ requires-dist = [
     { name = "omegaconf", specifier = "==2.3.0" },
     { name = "onnx", specifier = "==1.16.1" },
     { name = "onnx2torch", specifier = "==1.5.14" },
-    { name = "onnxruntime-gpu", specifier = "==1.18.0" },
+    { name = "onnxruntime-gpu", specifier = "==1.19.2", index = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/" },
     { name = "opencv-python", specifier = "==4.10.0.84" },
     { name = "pillow", specifier = "==10.3.0" },
     { name = "pre-commit", specifier = "==3.7.1" },
@@ -1571,8 +1571,8 @@ wheels = [
 
 [[package]]
 name = "onnxruntime-gpu"
-version = "1.18.0"
-source = { registry = "https://pypi.org/simple" }
+version = "1.19.2"
+source = { registry = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/" }
 dependencies = [
     { name = "coloredlogs", marker = "sys_platform == 'linux'" },
     { name = "flatbuffers", marker = "sys_platform == 'linux'" },
@@ -1582,7 +1582,7 @@ dependencies = [
     { name = "sympy", marker = "sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/ca/f9c9c338eb1075e53d785cf1a62a50388f2d210d38fc8f9dafd7d145039a/onnxruntime_gpu-1.18.0-cp310-cp310-manylinux_2_28_x86_64.whl", hash = "sha256:ebee59886d4a63d54cec673c73bdcc58b5496f9946e3c539af51550c6f222e88", size = 199835401, upload-time = "2024-05-20T13:11:37.232Z" },
+    { url = "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.19.2/onnxruntime_gpu-1.19.2-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a49740e079e7c5215830d30cde3df792e903df007aa0b0fd7aa797937061b27a" },
 ]
 
 [[package]]

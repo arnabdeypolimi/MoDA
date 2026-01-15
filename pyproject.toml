@@ -31,7 +31,7 @@ dependencies = [
     "omegaconf==2.3.0",
     "onnx==1.16.1",
     "onnx2torch==1.5.14",
-    "onnxruntime-gpu==1.18.0",
+    "onnxruntime-gpu==1.19.2",
     "opencv-python==4.10.0.84",
     "pillow==10.3.0",
     "pre-commit==3.7.1",
@@ -66,8 +66,14 @@ torch = { index = "pytorch-cu124" }
 torchvision = { index = "pytorch-cu124" }
 torchaudio = { index = "pytorch-cu124" }
 xformers = { index = "pytorch-cu124" }
+onnxruntime-gpu = { index = "onnxruntime-cuda12" }
 
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "onnxruntime-cuda12"
+url = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
 explicit = true
