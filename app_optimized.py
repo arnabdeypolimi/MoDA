@@ -32,7 +32,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 # Add project root to path
 sys.path.insert(0, osp.dirname(osp.realpath(__file__)))
@@ -208,6 +208,60 @@ class ValidationResult:
 
 
 @dataclass
+class GenerationMetrics:
+    """Metrics for video generation performance."""
+    
+    total_frames: int = 0
+    audio_duration: float = 0.0
+    
+    # Timing breakdowns (in seconds)
+    audio_processing_time: float = 0.0
+    motion_generation_time: float = 0.0
+    frame_rendering_time: float = 0.0
+    total_generation_time: float = 0.0
+    
+    @property
+    def generation_fps(self) -> float:
+        """Actual FPS achieved during generation (frames/second)."""
+        if self.total_generation_time > 0 and self.total_frames > 0:
+            return self.total_frames / self.total_generation_time
+        return 0.0
+    
+    @property
+    def motion_fps(self) -> float:
+        """FPS for motion generation phase."""
+        if self.motion_generation_time > 0 and self.total_frames > 0:
+            return self.total_frames / self.motion_generation_time
+        return 0.0
+    
+    @property
+    def rendering_fps(self) -> float:
+        """FPS for frame rendering phase."""
+        if self.frame_rendering_time > 0 and self.total_frames > 0:
+            return self.total_frames / self.frame_rendering_time
+        return 0.0
+    
+    @property
+    def realtime_factor(self) -> float:
+        """Ratio of audio duration to generation time (>1 means faster than realtime)."""
+        if self.total_generation_time > 0 and self.audio_duration > 0:
+            return self.audio_duration / self.total_generation_time
+        return 0.0
+    
+    def summary(self) -> str:
+        """Generate a human-readable summary of the metrics."""
+        lines = [
+            f"Generated {self.total_frames} frames from {self.audio_duration:.1f}s audio",
+            f"Total generation time: {self.total_generation_time:.2f}s",
+            f"Overall FPS: {self.generation_fps:.2f} fps",
+            f"  - Motion generation: {self.motion_generation_time:.2f}s ({self.motion_fps:.2f} fps)",
+            f"  - Frame rendering: {self.frame_rendering_time:.2f}s ({self.rendering_fps:.2f} fps)",
+            f"Realtime factor: {self.realtime_factor:.2f}x",
+        ]
+        return "\n".join(lines)
+
+
+@dataclass
 class ProcessingContext:
     """Context for a single video generation request."""
     
@@ -215,6 +269,7 @@ class ProcessingContext:
     temp_audio_path: Optional[Path] = None
     output_path: Optional[Path] = None
     start_time: float = field(default_factory=time.time)
+    metrics: GenerationMetrics = field(default_factory=GenerationMetrics)
     
     @property
     def elapsed_time(self) -> float:
@@ -516,7 +571,7 @@ class VideoGenerator:
         seed: int = 42,
         smooth_motion: bool = False,
         progress: gr.Progress = gr.Progress(),
-    ) -> str:
+    ) -> tuple[str, str]:
         """
         Generate a talking head video from image and audio.
         
@@ -530,7 +585,7 @@ class VideoGenerator:
             progress: Gradio progress tracker
         
         Returns:
-            Path to generated video
+            Tuple of (path to generated video, performance metrics summary)
         """
         logger.info("Starting video generation")
         logger.info(f"Parameters: emotion={emotion}, cfg_scale={cfg_scale}, seed={seed}, smooth={smooth_motion}")
@@ -566,6 +621,7 @@ class VideoGenerator:
                 raise gr.Error(f"Audio validation failed: {audio_result.message}")
             
             duration = audio_result.duration
+            context.metrics.audio_duration = duration
             est_time = max(30, duration * 2)
             logger.info(f"Audio duration: {duration:.1f}s, estimated processing time: {est_time:.0f}s")
             progress(0.1, desc=f"Audio duration: {duration:.1f}s (est. {est_time:.0f}s to process)")
@@ -593,11 +649,12 @@ class VideoGenerator:
             save_dir.mkdir(parents=True, exist_ok=True)
             logger.debug(f"Output directory: {save_dir}")
             
-            # Generate video
+            # Generate video with timing metrics
             progress(0.3, desc="Generating motion sequence...")
             logger.info("Starting motion sequence generation")
             
-            video_path = pipeline.driven_sample(
+            generation_start = time.time()
+            video_path, timing_metrics = pipeline.driven_sample(
                 image_path=str(params.image_path),
                 audio_path=str(processed_audio),
                 cfg_scale=params.cfg_scale,
@@ -605,7 +662,16 @@ class VideoGenerator:
                 save_dir=str(save_dir),
                 smooth=params.smooth_motion,
                 silent_audio_path=str(self.config.silent_audio_path),
+                return_metrics=True,
             )
+            context.metrics.total_generation_time = time.time() - generation_start
+            
+            # Update metrics from pipeline
+            if timing_metrics:
+                context.metrics.total_frames = timing_metrics.get("total_frames", 0)
+                context.metrics.audio_processing_time = timing_metrics.get("audio_processing_time", 0.0)
+                context.metrics.motion_generation_time = timing_metrics.get("motion_generation_time", 0.0)
+                context.metrics.frame_rendering_time = timing_metrics.get("frame_rendering_time", 0.0)
             
             progress(0.95, desc="Finalizing video...")
             logger.debug("Finalizing video output")
@@ -624,9 +690,13 @@ class VideoGenerator:
             
             progress(1.0, desc="Done!")
             elapsed = context.elapsed_time
-            logger.info(f"Video generation completed in {elapsed:.2f}s: {context.output_path}")
             
-            return str(context.output_path)
+            # Log performance metrics
+            metrics_summary = context.metrics.summary()
+            logger.info(f"Video generation completed in {elapsed:.2f}s: {context.output_path}")
+            logger.info(f"Performance metrics:\n{metrics_summary}")
+            
+            return str(context.output_path), metrics_summary
             
         except gr.Error:
             raise
@@ -701,26 +771,373 @@ class GradioInterface:
     def build(self) -> gr.Blocks:
         """Build the Gradio interface."""
         
+        custom_css = """
+        /* Global Styles */
+        body, .gradio-container {
+            background: #000000 !important;
+        }
+        .gradio-container {
+            max-width: 1400px !important;
+            margin: auto !important;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            padding: 2rem !important;
+        }
+        
+        /* Hide default dark mode toggle */
+        .dark-mode, .light-mode {
+            display: none !important;
+        }
+        
+        /* Header Styling */
+        .header-container {
+            text-align: left;
+            padding: 3rem 0;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .header-title {
+            font-size: 4rem;
+            font-weight: 300;
+            letter-spacing: -0.03em;
+            margin-bottom: 1rem;
+            line-height: 1.1;
+        }
+        .header-title .gradient-text {
+            background: linear-gradient(135deg, #a5f3fc 0%, #c4b5fd 50%, #f9a8d4 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-style: italic;
+        }
+        .header-title .white-text {
+            color: #ffffff;
+        }
+        .header-description {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 1.125rem;
+            line-height: 1.7;
+            max-width: 600px;
+        }
+        
+        /* Main Layout */
+        .main-row {
+            gap: 2rem !important;
+        }
+        
+        /* Card Styling */
+        .input-card, .output-card {
+            background: rgba(255, 255, 255, 0.03) !important;
+            border-radius: 16px !important;
+            padding: 1.5rem !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+            backdrop-filter: blur(10px);
+        }
+        
+        .section-title {
+            font-size: 0.875rem !important;
+            font-weight: 500 !important;
+            color: rgba(255, 255, 255, 0.5) !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.1em !important;
+            margin-bottom: 1.25rem !important;
+        }
+        
+        /* Labels */
+        label, .label-wrap span {
+            color: rgba(255, 255, 255, 0.9) !important;
+            font-weight: 500 !important;
+        }
+        
+        /* Input Components */
+        .input-image, .input-audio {
+            background: rgba(255, 255, 255, 0.02) !important;
+            border-radius: 12px !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            transition: all 0.3s ease !important;
+        }
+        .input-image:hover, .input-audio:hover {
+            border-color: rgba(165, 243, 252, 0.4) !important;
+            background: rgba(255, 255, 255, 0.04) !important;
+        }
+        
+        /* Upload areas */
+        .upload-container, [data-testid="image"], [data-testid="audio"] {
+            background: transparent !important;
+        }
+        
+        /* Input hints */
+        .input-hint {
+            font-size: 0.8rem;
+            color: rgba(255, 255, 255, 0.4);
+            margin-top: 0.5rem;
+        }
+        
+        /* Generate Button */
+        .generate-btn {
+            background: #ffffff !important;
+            color: #000000 !important;
+            border: none !important;
+            border-radius: 8px !important;
+            padding: 0.875rem 1.5rem !important;
+            font-size: 0.95rem !important;
+            font-weight: 500 !important;
+            letter-spacing: 0.01em !important;
+            transition: all 0.2s ease !important;
+            width: 100% !important;
+            margin-top: 1.5rem !important;
+            cursor: pointer !important;
+        }
+        .generate-btn:hover {
+            background: rgba(255, 255, 255, 0.9) !important;
+            transform: none !important;
+        }
+        .generate-btn::after {
+            content: ' \\2192';
+            margin-left: 0.5rem;
+        }
+        
+        /* Secondary button style */
+        .secondary-btn {
+            background: transparent !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(255, 255, 255, 0.2) !important;
+            border-radius: 8px !important;
+        }
+        .secondary-btn:hover {
+            border-color: rgba(255, 255, 255, 0.4) !important;
+        }
+        
+        /* Output Video */
+        .output-video {
+            border-radius: 16px !important;
+            overflow: hidden !important;
+            min-height: 400px;
+            background: rgba(255, 255, 255, 0.02) !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        }
+        .output-video video {
+            border-radius: 16px !important;
+        }
+        
+        /* Accordion Styling */
+        .accordion {
+            background: transparent !important;
+            border-radius: 12px !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            margin-top: 1rem !important;
+        }
+        .accordion .label-wrap {
+            padding: 0.875rem 1rem !important;
+            background: rgba(255, 255, 255, 0.02) !important;
+            border-radius: 12px !important;
+            color: rgba(255, 255, 255, 0.8) !important;
+        }
+        .accordion .label-wrap:hover {
+            background: rgba(255, 255, 255, 0.04) !important;
+        }
+        
+        /* Form elements */
+        input, select, textarea, .gr-input, .gr-text-input {
+            background: rgba(255, 255, 255, 0.05) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+            color: #ffffff !important;
+            border-radius: 8px !important;
+        }
+        input:focus, select:focus, textarea:focus {
+            border-color: rgba(165, 243, 252, 0.5) !important;
+            outline: none !important;
+        }
+        
+        /* Dropdown */
+        .gr-dropdown {
+            background: rgba(255, 255, 255, 0.05) !important;
+            border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        }
+        
+        /* Slider */
+        .gradio-slider input[type="range"] {
+            accent-color: #a5f3fc !important;
+        }
+        .gradio-slider .range-slider {
+            background: rgba(255, 255, 255, 0.1) !important;
+        }
+        
+        /* Checkbox */
+        input[type="checkbox"] {
+            accent-color: #a5f3fc !important;
+        }
+        
+        /* Info text */
+        .gr-form .info, .gr-input-label .info {
+            color: rgba(255, 255, 255, 0.4) !important;
+        }
+        
+        /* Tips Box */
+        .tips-box {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            padding: 1.25rem;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            margin-top: 1.25rem;
+        }
+        .tips-box p {
+            margin: 0 !important;
+            color: rgba(255, 255, 255, 0.6) !important;
+            font-size: 0.875rem !important;
+            line-height: 1.7 !important;
+        }
+        .tips-box strong {
+            color: rgba(255, 255, 255, 0.9) !important;
+        }
+        
+        /* Examples Section */
+        .examples-section {
+            margin-top: 3rem;
+            padding-top: 2rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        
+        /* Gallery/Examples */
+        .gallery, .examples {
+            background: transparent !important;
+        }
+        .gallery-item {
+            background: rgba(255, 255, 255, 0.03) !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+            border-radius: 12px !important;
+        }
+        .gallery-item:hover {
+            border-color: rgba(165, 243, 252, 0.3) !important;
+        }
+        
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            margin-top: 3rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .footer p {
+            color: rgba(255, 255, 255, 0.4) !important;
+            font-size: 0.875rem !important;
+            margin: 0 !important;
+        }
+        .footer a {
+            color: rgba(255, 255, 255, 0.7) !important;
+            text-decoration: none !important;
+            transition: color 0.2s ease !important;
+        }
+        .footer a:hover {
+            color: #a5f3fc !important;
+        }
+        
+        /* Progress bar */
+        .progress-bar {
+            background: linear-gradient(90deg, #a5f3fc, #c4b5fd, #f9a8d4) !important;
+        }
+        
+        /* Progress overlay styling - ensure proper layering */
+        .wrap.default.generating {
+            background: rgba(0, 0, 0, 0.85) !important;
+            backdrop-filter: blur(10px) !important;
+            border-radius: 12px !important;
+            z-index: 100 !important;
+        }
+        
+        /* Progress text styling */
+        .progress-text, .meta-text {
+            color: rgba(255, 255, 255, 0.9) !important;
+        }
+        
+        /* Ensure output video container has proper stacking context */
+        .output-video {
+            position: relative !important;
+            z-index: 1 !important;
+            isolation: isolate !important;
+        }
+        
+        /* Ensure accordion content stays below video overlay */
+        .accordion {
+            position: relative !important;
+            z-index: 0 !important;
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        /* Remove default Gradio backgrounds */
+        .gr-panel, .gr-box, .gr-form, .gr-block {
+            background: transparent !important;
+        }
+        
+        /* Tab styling if used */
+        .tabs {
+            background: transparent !important;
+        }
+        .tab-nav button {
+            background: transparent !important;
+            color: rgba(255, 255, 255, 0.6) !important;
+            border: none !important;
+        }
+        .tab-nav button.selected {
+            color: #ffffff !important;
+            border-bottom: 2px solid #a5f3fc !important;
+        }
+        """
+        
+        # Create dark theme
+        dark_theme = gr.themes.Base(
+            primary_hue="cyan",
+            secondary_hue="violet",
+            neutral_hue="slate",
+            font=gr.themes.GoogleFont("Inter"),
+        ).set(
+            body_background_fill="#000000",
+            body_background_fill_dark="#000000",
+            block_background_fill="transparent",
+            block_background_fill_dark="transparent",
+            panel_background_fill="transparent",
+            panel_background_fill_dark="transparent",
+            background_fill_primary="#000000",
+            background_fill_primary_dark="#000000",
+            background_fill_secondary="#0a0a0a",
+            background_fill_secondary_dark="#0a0a0a",
+            border_color_primary="rgba(255, 255, 255, 0.1)",
+            border_color_primary_dark="rgba(255, 255, 255, 0.1)",
+            color_accent="*primary_400",
+            color_accent_soft="*primary_50",
+        )
+        
         with gr.Blocks(
             title="MoDA - Talking Head Generator",
-            theme=gr.themes.Soft(),
-            css="""
-            .container { max-width: 1200px; margin: auto; }
-            .output-video { min-height: 400px; }
-            """
+            theme=dark_theme,
+            css=custom_css
         ) as demo:
             
             self._build_header()
             
-            with gr.Row():
+            with gr.Row(equal_height=True, elem_classes=["main-row"]):
                 image_input, audio_input, controls = self._build_input_column()
-                video_output = self._build_output_column()
+                video_output, metrics_output = self._build_output_column()
             
             self._build_examples(
                 image_input, audio_input, 
                 controls["emotion"], controls["cfg_scale"],
                 controls["seed"], controls["smooth"],
-                video_output
+                video_output, metrics_output
             )
             
             # Event handler
@@ -731,7 +1148,7 @@ class GradioInterface:
                     controls["emotion"], controls["cfg_scale"],
                     controls["seed"], controls["smooth"]
                 ],
-                outputs=[video_output],
+                outputs=[video_output, metrics_output],
                 show_progress="full"
             )
             
@@ -741,64 +1158,80 @@ class GradioInterface:
     
     def _build_header(self) -> None:
         """Build the header section."""
-        gr.Markdown("""
-        # 🎬 MoDA - Multi-modal Diffusion Talking Head Generator
-        
-        Upload a face image and audio to generate a realistic talking head video.
-        The model uses diffusion-based motion generation with audio-visual synchronization.
+        gr.HTML("""
+        <div class="header-container">
+            <h1 class="header-title">
+                <span class="gradient-text">Talking head generator </span>
+            </h1>
+            <p class="header-description">
+                MoDA delivers state-of-the-art talking head generation using 
+                multi-modal diffusion models. Transform any face image and audio 
+                into realistic, lip-synced video.
+            </p>
+        </div>
         """)
     
     def _build_input_column(self) -> tuple[gr.Image, gr.Audio, dict]:
         """Build the input column and return components."""
-        with gr.Column(scale=1):
-            gr.Markdown("### 📥 Input")
+        with gr.Column(scale=1, elem_classes=["input-card"]):
+            gr.HTML('<div class="section-title">Inputs</div>')
             
-            image_input = gr.Image(
-                type="filepath",
-                label="Source Face Image",
-                elem_classes=["input-image"]
-            )
+            with gr.Group():
+                image_input = gr.Image(
+                    type="filepath",
+                    label="Face Image",
+                    elem_classes=["input-image"],
+                    height=200,
+                )
+                gr.HTML('<p class="input-hint">PNG, JPG, or WebP. Clear frontal face works best.</p>')
             
-            audio_input = gr.Audio(
-                type="filepath",
-                label="Driving Audio",
-                elem_classes=["input-audio"]
-            )
+            with gr.Group():
+                audio_input = gr.Audio(
+                    type="filepath",
+                    label="Driving Audio",
+                    elem_classes=["input-audio"],
+                )
+                gr.HTML('<p class="input-hint">WAV or MP3. Clean speech recommended, max 5 min.</p>')
             
-            with gr.Accordion("⚙️ Advanced Options", open=False):
-                emotion_input = gr.Dropdown(
-                    choices=Emotion.choices(),
-                    value=Emotion.NONE.value,
-                    label="Emotion Conditioning",
-                    info="Apply emotion style to the generated motion"
-                )
+            with gr.Accordion("Advanced Settings", open=False, elem_classes=["accordion"]):
+                with gr.Row():
+                    emotion_input = gr.Dropdown(
+                        choices=Emotion.choices(),
+                        value=Emotion.NONE.value,
+                        label="Emotion",
+                        info="Emotion style for motion",
+                        scale=1,
+                    )
+                    cfg_scale_input = gr.Slider(
+                        minimum=1.0,
+                        maximum=2.5,
+                        value=1.2,
+                        step=0.1,
+                        label="Guidance",
+                        info="Audio adherence strength",
+                        scale=1,
+                    )
                 
-                cfg_scale_input = gr.Slider(
-                    minimum=1.0,
-                    maximum=2.5,
-                    value=1.2,
-                    step=0.1,
-                    label="CFG Scale",
-                    info="Higher = stronger audio adherence, lower = more natural motion"
-                )
-                
-                seed_input = gr.Number(
-                    value=42,
-                    label="Random Seed",
-                    info="Set for reproducible results",
-                    precision=0
-                )
-                
-                smooth_input = gr.Checkbox(
-                    value=False,
-                    label="Smooth Motion",
-                    info="Apply Kalman smoothing (reduces jitter but may reduce expressiveness)"
-                )
+                with gr.Row():
+                    seed_input = gr.Number(
+                        value=42,
+                        label="Seed",
+                        info="Reproducibility",
+                        precision=0,
+                        scale=1,
+                    )
+                    smooth_input = gr.Checkbox(
+                        value=False,
+                        label="Smooth",
+                        info="Reduce jitter",
+                        scale=1,
+                    )
             
             generate_btn = gr.Button(
-                "🚀 Generate Video",
+                "Generate Video",
                 variant="primary",
-                size="lg"
+                size="lg",
+                elem_classes=["generate-btn"],
             )
         
         controls = {
@@ -811,26 +1244,37 @@ class GradioInterface:
         
         return image_input, audio_input, controls
     
-    def _build_output_column(self) -> gr.Video:
-        """Build the output column and return video component."""
-        with gr.Column(scale=1):
-            gr.Markdown("### 📤 Output")
+    def _build_output_column(self) -> tuple[gr.Video, gr.Textbox]:
+        """Build the output column and return video and metrics components."""
+        with gr.Column(scale=1, elem_classes=["output-card"]):
+            gr.HTML('<div class="section-title">Output</div>')
             
             video_output = gr.Video(
                 label="Generated Video",
                 elem_classes=["output-video"],
-                autoplay=True
+                autoplay=True,
+                height=380,
             )
             
-            with gr.Row():
-                gr.Markdown("""
-                **Tips:**
-                - Use clear, frontal face images for best results
-                - Audio should be clean speech (no background music)
-                - Processing time: ~2x audio duration
-                """)
+            with gr.Accordion("Performance Metrics", open=False, elem_classes=["accordion"]):
+                metrics_output = gr.Textbox(
+                    label="Generation Statistics",
+                    lines=7,
+                    max_lines=10,
+                    interactive=False,
+                    placeholder="Performance metrics will appear here after generation...",
+                )
+            
+            gr.HTML("""
+            <div class="tips-box">
+                <p><strong>Tips for best results</strong><br>
+                Clear, frontal face images with good lighting work best. 
+                Use clean speech audio without background music. 
+                Processing time is approximately 2x audio duration.</p>
+            </div>
+            """)
         
-        return video_output
+        return video_output, metrics_output
     
     def _build_examples(
         self,
@@ -841,25 +1285,37 @@ class GradioInterface:
         seed_input: gr.Number,
         smooth_input: gr.Checkbox,
         video_output: gr.Video,
+        metrics_output: gr.Textbox,
     ) -> None:
         """Build the examples section."""
         examples = self.example_loader.get_examples()
         if examples:
-            gr.Markdown("### 📂 Examples")
-            gr.Examples(
-                examples=examples,
-                inputs=[image_input, audio_input, emotion_input, cfg_scale_input, seed_input, smooth_input],
-                outputs=[video_output],
-                fn=self.generator.generate,
-                cache_examples=False,
-            )
+            with gr.Row(elem_classes=["examples-section"]):
+                with gr.Column():
+                    gr.HTML('<div class="section-title">Examples</div>')
+                    gr.Examples(
+                        examples=examples,
+                        inputs=[image_input, audio_input, emotion_input, cfg_scale_input, seed_input, smooth_input],
+                        outputs=[video_output, metrics_output],
+                        fn=self.generator.generate,
+                        cache_examples=False,
+                        examples_per_page=5,
+                    )
     
     def _build_footer(self) -> None:
         """Build the footer section."""
-        gr.Markdown("""
-        ---
-        **MoDA** - Multi-modal Diffusion Architecture for Talking Head Generation  
-        [GitHub](https://github.com/lixinyyang/MoDA) | [Model Weights](https://huggingface.co/lixinyizju/moda)
+        gr.HTML("""
+        <div class="footer">
+            <p style="margin-bottom: 0.75rem;">
+                <strong style="color: rgba(255,255,255,0.8);">MoDA</strong> 
+                <span style="color: rgba(255,255,255,0.4);">- Multi-modal Diffusion Architecture</span>
+            </p>
+            <p>
+                <a href="https://github.com/lixinyyang/MoDA" target="_blank">GitHub</a>
+                <span style="color: rgba(255,255,255,0.2); margin: 0 0.75rem;">|</span>
+                <a href="https://huggingface.co/lixinyizju/moda" target="_blank">Model Weights</a>
+            </p>
+        </div>
         """)
     
     def launch(self) -> None:

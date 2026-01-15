@@ -227,7 +227,7 @@ class LiveVASAPipeline(object):
         logger.debug(f"Audio embedding extracted, shape: {audio_emb.shape}")
         return audio_emb, audio_path, add_frames, ori_audio_path
 
-    def driven_sample(self, image_path: str, audio_path: str, cfg_scale: float=1., emo: int=8, save_dir=None, smooth=False, silent_audio_path = None, silent_mode="post"):
+    def driven_sample(self, image_path: str, audio_path: str, cfg_scale: float=1., emo: int=8, save_dir=None, smooth=False, silent_audio_path = None, silent_mode="post", return_metrics: bool = False):
         logger.info("=" * 40)
         logger.info("Starting driven_sample generation")
         logger.info("=" * 40)
@@ -240,9 +240,20 @@ class LiveVASAPipeline(object):
         logger.info(f"Input audio: {audio_name}")
         logger.info(f"Parameters: cfg_scale={cfg_scale}, emotion={emo_map.get(emo, 'Unknown')}, smooth={smooth}")
         
+        # Initialize timing metrics
+        timing_metrics = {
+            "total_frames": 0,
+            "audio_processing_time": 0.0,
+            "motion_generation_time": 0.0,
+            "frame_rendering_time": 0.0,
+        }
+        
         # get audio embeddings
         logger.info("Step 1/5: Processing audio...")
+        audio_start = time.time()
         audio_emb, audio_path, add_frames, ori_audio_path = self.process_audio(audio_path, silent_audio_path, mode=silent_mode)
+        timing_metrics["audio_processing_time"] = time.time() - audio_start
+        logger.debug(f"Audio processing took {timing_metrics['audio_processing_time']:.2f}s")
 
         # get src image infos
         logger.info("Step 2/5: Processing source image...")
@@ -253,6 +264,7 @@ class LiveVASAPipeline(object):
         
         # generate motions
         logger.info("Step 3/5: Generating motion sequence...")
+        motion_start = time.time()
         motion = self.motion_generator.sample(audio_emb, x_s_info["kp"], prev_motion=prev_motion, cfg_scale=cfg_scale, emo=emo)
         if add_frames > 0:
             standard_motion = motion[-max(add_frames*3//4, 1)]
@@ -263,8 +275,13 @@ class LiveVASAPipeline(object):
                 motion = motion[add_frames:]
             else:
                 motion = motion[:-add_frames]
-
-        logger.info(f"Motion sequence generated: {len(motion)} frames")
+        timing_metrics["motion_generation_time"] = time.time() - motion_start
+        
+        total_frames = len(motion)
+        timing_metrics["total_frames"] = total_frames
+        motion_fps = total_frames / timing_metrics["motion_generation_time"] if timing_metrics["motion_generation_time"] > 0 else 0
+        logger.info(f"Motion sequence generated: {total_frames} frames in {timing_metrics['motion_generation_time']:.2f}s ({motion_fps:.2f} fps)")
+        
         kp_infos = self.get_motion_sequence(motion, rescale_ratio=rescale_ratio)
         
         # driven results
@@ -276,10 +293,23 @@ class LiveVASAPipeline(object):
         logger.debug(f"Output path: {save_path}")
 
         logger.info("Step 4/5: Rendering video frames...")
+        render_start = time.time()
         self.motion_processer.driven_by_audio(source_rgb_lst[0], kp_infos, save_path, ori_audio_path, smooth=smooth)
+        timing_metrics["frame_rendering_time"] = time.time() - render_start
+        
+        render_fps = total_frames / timing_metrics["frame_rendering_time"] if timing_metrics["frame_rendering_time"] > 0 else 0
+        logger.info(f"Frame rendering completed: {total_frames} frames in {timing_metrics['frame_rendering_time']:.2f}s ({render_fps:.2f} fps)")
         
         logger.info("Step 5/5: Video generation complete")
         logger.info(f"Output saved to: {save_path}")
+        
+        # Log overall performance summary
+        total_time = timing_metrics["audio_processing_time"] + timing_metrics["motion_generation_time"] + timing_metrics["frame_rendering_time"]
+        overall_fps = total_frames / total_time if total_time > 0 else 0
+        logger.info(f"Performance summary: {total_frames} frames, {total_time:.2f}s total, {overall_fps:.2f} fps overall")
+        
+        if return_metrics:
+            return save_path, timing_metrics
         return save_path
 
 
