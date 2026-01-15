@@ -13,7 +13,13 @@ from .talking_head_dit import TalkingHeadDiT_models
 import sys
 from ..schedulers.scheduling_ddim import DDIMScheduler
 from ..schedulers.flow_matching import ModelSamplingDiscreteFlow
+
 sys.path.append(osp.dirname(osp.dirname(osp.dirname(osp.dirname(osp.realpath(__file__))))))
+from src.utils.logger import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
+
 scheduler_map = {
     "ddim": DDIMScheduler,
     # "ddpm": DiffusionSchedule,
@@ -27,8 +33,10 @@ class MotionDiffusion(nn.Module):
 
         self.config = config
         self.smo_wsize = smo_wsize
-        print(f"================================== Init Motion GeneratorV2 ==================================")
-        print(OmegaConf.to_yaml(self.config))
+        logger.info("=" * 40)
+        logger.info("Initializing Motion Diffusion Model")
+        logger.info("=" * 40)
+        logger.debug(f"Config:\n{OmegaConf.to_yaml(self.config)}")
         
         motion_gen_config = config.motion_generator
         motion_gen_params = motion_gen_config.params
@@ -83,7 +91,7 @@ class MotionDiffusion(nn.Module):
         self.eta = scheduler_params.eta
         self.scheduler.set_timesteps(scheduler_params.num_inference_steps, device=self.device)
         self.timesteps = self.scheduler.timesteps
-        print(f"time steps: {self.timesteps}")
+        logger.debug(f"Scheduler timesteps: {self.timesteps}")
         
         self.sample_mode = scheduler_config.sample_mode
         assert (self.sample_mode in ["noise", "sample"], f"Unknown sample mode {self.sample_mode}, should be noise or sample")
@@ -110,8 +118,9 @@ class MotionDiffusion(nn.Module):
         self.loss_type = loss_type
 
         total_params = sum(p.numel() for p in self.parameters())
-        print('Number of parameter: % .4fM' % (total_params / 1e6))
-        print(f"================================== init Motion GeneratorV2: Done ==================================")
+        logger.info(f"Model parameters: {total_params / 1e6:.4f}M")
+        logger.info("Motion Diffusion Model initialization complete")
+        logger.info("=" * 40)
         
     def _smooth(self, motion):
         # motion, B x L x D
@@ -256,7 +265,7 @@ class MotionDiffusion(nn.Module):
             emo = torch.Tensor([emo]).long().to(self.device)
         start_idx = 0
         for i in range(0, n_subdivision):
-            print(f"Sample subclip {i+1}/{n_subdivision}")
+            logger.debug(f"Sampling subclip {i+1}/{n_subdivision}")
             end_idx = start_idx + self.n_pred_frames
             audio_segment = audio_tensor[start_idx: end_idx].unsqueeze(0)
             start_idx += stride

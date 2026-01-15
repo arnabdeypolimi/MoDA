@@ -19,6 +19,13 @@ from decord import VideoReader # must after import torch
 
 from rich.progress import track
 
+# Add project root to path for imports
+sys.path.insert(0, osp.dirname(osp.dirname(osp.dirname(osp.dirname(osp.dirname(osp.realpath(__file__)))))))
+from src.utils.logger import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
+
 
 
 
@@ -88,59 +95,68 @@ class MotionProcesser(object):
     def __init__(self, cfg_path, device_id=0) -> None:
         device = f"cuda:{device_id}"
         cfg = OmegaConf.load(cfg_path)
-        print(f"Load cfg from {osp.realpath(cfg_path)} done.")
-        print(f"=============================== Driven CFG ===============================")
-        print(OmegaConf.to_yaml(cfg))
-        print(f"=============================== ========== ===============================")
+        
+        logger.info("=" * 40)
+        logger.info("Initializing Motion Processor")
+        logger.info("=" * 40)
+        logger.info(f"Using device: {device}")
+        logger.debug(f"Config:\n{OmegaConf.to_yaml(cfg)}")
+        
         models_config = OmegaConf.load(cfg.models_config)
 
         # 1. init appearance feature extractor
+        logger.info("Loading appearance feature extractor...")
         self.appearance_feature_extractor = load_model(
             cfg.appearance_feature_extractor_path, 
             models_config, 
             device, 
             'appearance_feature_extractor'
         )
-        print(f'1. Load appearance_feature_extractor from {osp.realpath(cfg.appearance_feature_extractor_path)} done.')
+        logger.debug(f'Appearance feature extractor loaded from: {osp.realpath(cfg.appearance_feature_extractor_path)}')
 
         # 2. # init motion extractor
+        logger.info("Loading motion extractor...")
         self.motion_extractor = load_model(
             cfg.motion_extractor_path, 
             models_config, 
             device, 
             'motion_extractor'
         )
-        print(f'2. Load motion_extractor from {osp.realpath(cfg.motion_extractor_path)} done.')
+        logger.debug(f'Motion extractor loaded from: {osp.realpath(cfg.motion_extractor_path)}')
         
         # 3. init S and R
         if cfg.stitching_retargeting_module_path is not None and osp.exists(cfg.stitching_retargeting_module_path):
+            logger.info("Loading stitching/retargeting module...")
             self.stitching_retargeting_module = load_model(
                 cfg.stitching_retargeting_module_path, 
                 models_config, 
                 device, 
                 'stitching_retargeting_module'
             )
-            print(f'3. Load stitching_retargeting_module from {osp.realpath(cfg.stitching_retargeting_module_path)} done.')
+            logger.debug(f'Stitching/retargeting module loaded from: {osp.realpath(cfg.stitching_retargeting_module_path)}')
         else:
             self.stitching_retargeting_module = None
+            logger.debug("Stitching/retargeting module not loaded (path not configured)")
         
         # 4. init motion warper
+        logger.info("Loading warping module...")
         self.warping_module = load_model(
             cfg.warping_module_path, 
             models_config, 
             device, 
             'warping_module'
         )
-        print(f"4. Load warping_module from {osp.realpath(cfg.warping_module_path)} done.")
+        logger.debug(f"Warping module loaded from: {osp.realpath(cfg.warping_module_path)}")
 
         # 5. init decoder
+        logger.info("Loading SPADE generator...")
         self.spade_generator = load_model(
             cfg.spade_generator_path, 
             models_config, 
             device, 
             'spade_generator'
         )
-        print(f"Load generator from {osp.realpath(cfg.spade_generator_path)} done.")
+        logger.debug(f"SPADE generator loaded from: {osp.realpath(cfg.spade_generator_path)}")
 
         # # Optimize for inference
         self.compile = cfg.flag_do_torch_compile
@@ -165,7 +181,11 @@ class MotionProcesser(object):
             self.lip_array = pickle.load(f)
 
         # 9. load face parser
+        logger.info("Loading face parser...")
         self.face_parser, self.to_tensor = build_face_parser(weight_path=cfg.face_parser_weight_path, resnet_weight_path=cfg.resnet_weight_path, device_id=device_id)
+        
+        logger.info("Motion Processor initialization complete")
+        logger.info("=" * 40)
 
     def inference_ctx(self):    
         ctx = torch.autocast(device_type=self.device[:4], dtype=torch.float16,
@@ -382,7 +402,7 @@ class MotionProcesser(object):
     def crop_source_video(self, img_lst, do_crop=False):
         if do_crop:
             ret_s = self.cropper.crop_source_video(img_lst, self.cropper.crop_cfg)
-            print(f'Source video is cropped, {len(ret_s["frame_crop_lst"])} frames are processed.')
+            logger.debug(f'Source video cropped: {len(ret_s["frame_crop_lst"])} frames processed')
             img_crop_256x256_lst, lmk_crop_lst, M_c2o_lst = ret_s['frame_crop_lst'], ret_s['lmk_crop_lst'], ret_s['M_c2o_lst']
         else:
             M_c2o_lst = None
@@ -393,7 +413,7 @@ class MotionProcesser(object):
     def crop_driving_videos(self, img_lst, do_crop=False):
         if do_crop:
             ret_d = self.cropper.crop_driving_video(img_lst)
-            print(f'Driving video is cropped, {len(ret_d["frame_crop_lst"])} frames are processed.')
+            logger.debug(f'Driving video cropped: {len(ret_d["frame_crop_lst"])} frames processed')
             img_crop_lst, lmk_crop_lst = ret_d['frame_crop_lst'], ret_d['lmk_crop_lst']
             img_crop_256x256_lst = [cv2.resize(_, (256, 256)) for _ in img_lst]
         else:
@@ -521,7 +541,7 @@ class MotionProcesser(object):
         tgt_motion = {'n_frames': n_frames, 'output_fps': 25, 'motion': motion_list}
 
         if smooth:
-            print("Smoothing motion sequence...")
+            logger.debug("Applying motion smoothing...")
             tgt_motion = smooth_(tgt_motion, method="ema")
         return tgt_motion
 
@@ -915,10 +935,11 @@ class MotionProcesser(object):
         return I_p_lst 
 
     def read_image(self, image_path: str) -> list:
+        logger.debug(f"Loading image: {image_path}")
         img_rgb = load_image_rgb(image_path)
         img_rgb = resize_to_limit(img_rgb, self.cfg.source_max_dim, self.cfg.source_division)
         source_rgb_list = [img_rgb]
-        print(f"Load image from {osp.realpath(image_path)} done.")
+        logger.debug(f"Image loaded: shape={img_rgb.shape}")
         return source_rgb_list
 
     def read_video(self, video_path: str, interval=None) -> list:
@@ -992,7 +1013,7 @@ class MotionProcesser(object):
         return template_dct
 
     def load_template(self, wfp_template):
-        print(f"Load from template: {wfp_template}, NOT the video, so the cropping video and audio are both NULL.")
+        logger.debug(f"Loading template: {wfp_template}")
         driving_template_dct = load(wfp_template)
         c_d_eyes_lst = driving_template_dct['c_eyes_lst'] if 'c_eyes_lst' in driving_template_dct.keys() else driving_template_dct['c_d_eyes_lst'] # compatible with previous keys
         c_d_lip_lst = driving_template_dct['c_lip_lst'] if 'c_lip_lst' in driving_template_dct.keys() else driving_template_dct['c_d_lip_lst']
@@ -1002,7 +1023,7 @@ class MotionProcesser(object):
 
         # set output_fps
         output_fps = driving_template_dct.get('output_fps', 25)
-        print(f'The FPS of template: {output_fps}')
+        logger.debug(f'Template loaded: {n_frames} frames, FPS={output_fps}')
         return driving_template_dct
 
     def reconstruction(self, src_img, dst_imgs, video_path="template"):
@@ -1112,7 +1133,7 @@ class MotionProcesser(object):
         # driven 
         results = self.driven_debug(f_s, x_s_info, s_lmk, c_s_eyes_lst, driving_template_dct, c_d_eyes_lst=c_d_eyes_lst, c_d_lip_lst=c_d_lip_lst)
         results = [paste_back(result, crop_info['M_c2o'], src_img, mask_ori_float) for result in results]
-        print(results.shape)
+        logger.debug(f"Mix results shape: {results.shape if hasattr(results, 'shape') else len(results)}")
         self.save_results(results, save_path, audio_path)
     
     def drive_video_by_mix(self, video_path, driving_video_path, kp_infos, save_path, audio_path):

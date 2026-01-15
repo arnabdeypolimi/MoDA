@@ -16,9 +16,11 @@ from src.datasets.preprocess.extract_features.audio_processer import AudioProces
 from src.datasets.preprocess.extract_features.motion_processer import MotionProcesser
 from src.models.dit.talking_head_diffusion import MotionDiffusion
 
-
-from src.utils.rprint import rlog as log
+from src.utils.logger import get_logger
 import time
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 emo_map = {
     0: 'Anger', 
@@ -61,55 +63,67 @@ class LiveVASAPipeline(object):
         Args:
             cfg_path (str): YAML config file path of LiveVASA
         """
+        logger.info("=" * 60)
+        logger.info("Initializing LiveVASA Pipeline")
+        logger.info("=" * 60)
+        
         # pretrained encoders of live portrait
         cfg = OmegaConf.load(cfg_path)
         self.device_id = cfg.device_id
         self.device = f"cuda:{self.device_id}"
+        logger.info(f"Using device: {self.device}")
         
         # 1 load audio processor
+        logger.info("Loading audio processor...")
         self.audio_processor: AudioProcessor = AudioProcessor(cfg_path=cfg.audio_model_config, is_training=False)
-        log(f"Load audio_processor done.")
+        logger.info("Audio processor loaded successfully")
 
         if cfg.motion_models_config is not None and load_motion_generator:
+            logger.info("Loading motion generator...")
             motion_models_config = OmegaConf.load(cfg.motion_models_config)
-            log(f"Load motion_models_config from {osp.realpath(cfg.motion_models_config)} done.")
+            logger.debug(f"Motion models config loaded from: {osp.realpath(cfg.motion_models_config)}")
             self.motion_generator = MotionDiffusion(motion_models_config, device=self.device)
             self.load_motion_generator(self.motion_generator, cfg.motion_generator_path)
-            # self.motion_generator.eval()
+            logger.info("Motion generator loaded successfully")
         else:
             self.motion_generator = None    
-            log(f"Init motion_generator as None.")
+            logger.warning("Motion generator not loaded (disabled by config)")
         
         # 3. load motion processer
+        logger.info("Loading motion processor...")
         self.motion_processer: MotionProcesser = MotionProcesser(cfg_path=cfg.motion_processer_config, device_id=cfg.device_id)
-        log(f"Load motion_processor done.")
+        logger.info("Motion processor loaded successfully")
 
 
         self.motion_mean_std = None
         if motion_mean_std_path is not None:
+            logger.debug(f"Loading motion mean/std from: {motion_mean_std_path}")
             self.motion_mean_std = torch.load(motion_mean_std_path)
             self.motion_mean_std["mean"] = self.motion_mean_std["mean"].to(self.device)
             self.motion_mean_std["std"] = self.motion_mean_std["std"].to(self.device)
-            print(f"scale mean: {self.motion_mean_std['mean'][0, 63:64]}, std: {self.motion_mean_std['std'][0, 63:64]}")
-            print(f"t mean: {self.motion_mean_std['mean'][0, 64:67]}, std: {self.motion_mean_std['std'][0, 64:67]}")
-            print(f"pitch mean: {self.motion_mean_std['mean'][0, 67:68]}, std: {self.motion_mean_std['std'][0, 67:68]}")
-            print(f"yaw mean: {self.motion_mean_std['mean'][0, 68:69]}, std: {self.motion_mean_std['std'][0, 68:69]}")
-            print(f"scoll mean: {self.motion_mean_std['mean'][0, 69:70]}, std: {self.motion_mean_std['std'][0, 69:70]}")
+            logger.debug(f"scale mean: {self.motion_mean_std['mean'][0, 63:64]}, std: {self.motion_mean_std['std'][0, 63:64]}")
+            logger.debug(f"t mean: {self.motion_mean_std['mean'][0, 64:67]}, std: {self.motion_mean_std['std'][0, 64:67]}")
+            logger.debug(f"pitch mean: {self.motion_mean_std['mean'][0, 67:68]}, std: {self.motion_mean_std['std'][0, 67:68]}")
+            logger.debug(f"yaw mean: {self.motion_mean_std['mean'][0, 68:69]}, std: {self.motion_mean_std['std'][0, 68:69]}")
+            logger.debug(f"roll mean: {self.motion_mean_std['mean'][0, 69:70]}, std: {self.motion_mean_std['std'][0, 69:70]}")
 
         self.cfg = cfg
+        logger.info("LiveVASA Pipeline initialization complete")
 
     def set_motion_generator(self, motion_generator: MotionDiffusion):
+        logger.debug("Setting custom motion generator")
         self.motion_generator = motion_generator
         self.motion_generator.to(self.device)
         
     def load_motion_generator(self, model, motion_generator_path: str):
-        print(motion_generator_path)
+        logger.info(f"Loading motion generator weights from: {motion_generator_path}")
         model_data = torch.load(motion_generator_path, map_location=self.device)
         model.load_state_dict(model_data, strict=False)
-       
+        logger.debug("Motion generator weights loaded")
 
         model.to(self.device)
         model.eval()
+        logger.debug("Motion generator moved to device and set to eval mode")
 
     def modulate_lip(self, standard_motion: torch.Tensor, motions: torch.Tensor, alpha=5, beta=0.1):
         # standard_motion: 63
@@ -204,25 +218,41 @@ class LiveVASAPipeline(object):
         return kp_infos, rescale_ratio
 
     def process_audio(self, audio_path: str, silent_audio_path = None, mode="post"):
+        logger.debug(f"Processing audio: {audio_path}")
         # add silent audio to pad short input
         ori_audio_path = audio_path
         audio_path, add_frames = self.audio_processor.add_silent_audio(audio_path, silent_audio_path, add_duration=2, linear_fusion=False, mode=mode)
+        logger.debug(f"Silent audio padding added: {add_frames} frames")
         audio_emb = self.audio_processor.get_long_audio_emb(audio_path)
+        logger.debug(f"Audio embedding extracted, shape: {audio_emb.shape}")
         return audio_emb, audio_path, add_frames, ori_audio_path
 
     def driven_sample(self, image_path: str, audio_path: str, cfg_scale: float=1., emo: int=8, save_dir=None, smooth=False, silent_audio_path = None, silent_mode="post"):
+        logger.info("=" * 40)
+        logger.info("Starting driven_sample generation")
+        logger.info("=" * 40)
+        
         assert self.motion_generator is not None, f"Motion Generator is not set"
         reference_name = osp.basename(image_path).split('.')[0]
         audio_name = osp.basename(audio_path).split('.')[0]
+        
+        logger.info(f"Input image: {reference_name}")
+        logger.info(f"Input audio: {audio_name}")
+        logger.info(f"Parameters: cfg_scale={cfg_scale}, emotion={emo_map.get(emo, 'Unknown')}, smooth={smooth}")
+        
         # get audio embeddings
+        logger.info("Step 1/5: Processing audio...")
         audio_emb, audio_path, add_frames, ori_audio_path = self.process_audio(audio_path, silent_audio_path, mode=silent_mode)
 
         # get src image infos
+        logger.info("Step 2/5: Processing source image...")
         source_rgb_lst = self.motion_processer.read_image(image_path)
         src_img_256x256, s_lmk, crop_info = self.motion_processer.crop_image(source_rgb_lst[0], do_crop=True)
         f_s, x_s_info = self.motion_processer.prepare_source(src_img_256x256)
         prev_motion, rescale_ratio = self.get_prev_motion(x_s_info)
+        
         # generate motions
+        logger.info("Step 3/5: Generating motion sequence...")
         motion = self.motion_generator.sample(audio_emb, x_s_info["kp"], prev_motion=prev_motion, cfg_scale=cfg_scale, emo=emo)
         if add_frames > 0:
             standard_motion = motion[-max(add_frames*3//4, 1)]
@@ -234,7 +264,7 @@ class LiveVASAPipeline(object):
             else:
                 motion = motion[:-add_frames]
 
-        print(f"length of motion: {len(motion)}")
+        logger.info(f"Motion sequence generated: {len(motion)} frames")
         kp_infos = self.get_motion_sequence(motion, rescale_ratio=rescale_ratio)
         
         # driven results
@@ -242,10 +272,14 @@ class LiveVASAPipeline(object):
             save_dir = self.cfg.output_dir
         if not osp.exists(save_dir):
             os.makedirs(save_dir)
-        #save_path = osp.join(save_dir, f'{reference_name}_{audio_name}_cfg-{cfg_scale}_emo-{emo_map[emo]}.mp4')
         save_path = osp.join(save_dir, f'{reference_name}.mp4')
+        logger.debug(f"Output path: {save_path}")
 
+        logger.info("Step 4/5: Rendering video frames...")
         self.motion_processer.driven_by_audio(source_rgb_lst[0], kp_infos, save_path, ori_audio_path, smooth=smooth)
+        
+        logger.info("Step 5/5: Video generation complete")
+        logger.info(f"Output saved to: {save_path}")
         return save_path
 
 
@@ -262,6 +296,7 @@ if __name__ == "__main__":
     import time
     import random
     import argparse
+    
     parser = argparse.ArgumentParser(description="Arguments for the task")
     parser.add_argument('--task', type=str, default="test", help='Task to perform')
     parser.add_argument('--cfg_path', type=str, default="configs/audio2motion/inference/inference.yaml", help='Path to configuration file')
@@ -272,6 +307,14 @@ if __name__ == "__main__":
     parser.add_argument('--motion_mean_std_path', type=str, default="src/datasets/mean.pt", help='Path to motion mean and standard deviation file')
     parser.add_argument('--cfg_scale', type=float, default=1.2, help='Scaling factor for the configuration')
     args = parser.parse_args()
+    
+    logger.info("=" * 60)
+    logger.info("MoDA Inference Script")
+    logger.info("=" * 60)
+    logger.info(f"Image: {args.image_path}")
+    logger.info(f"Audio: {args.audio_path}")
+    logger.info(f"CFG Scale: {args.cfg_scale}")
+    logger.info(f"Output directory: {args.save_dir}")
         
     pipeline = LiveVASAPipeline(cfg_path=args.cfg_path, motion_mean_std_path=args.motion_mean_std_path)
     emo=8
@@ -282,12 +325,17 @@ if __name__ == "__main__":
     if not osp.exists(save_dir):
         os.makedirs(save_dir)  
   
+    start_time = time.time()
     video_path = pipeline.driven_sample(
                     args.image_path, args.audio_path, 
                     cfg_scale=args.cfg_scale, emo=emo, 
                     save_dir=save_dir, smooth=False,
                     silent_audio_path = args.silent_audio_path,
                 )
-    print(f"Video Result has been saved into: {video_path}")
+    elapsed = time.time() - start_time
+    logger.info("=" * 60)
+    logger.info(f"Video generation completed in {elapsed:.2f}s")
+    logger.info(f"Output saved to: {video_path}")
+    logger.info("=" * 60)
 
 

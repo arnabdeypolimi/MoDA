@@ -15,7 +15,6 @@ Key improvements over original app.py:
 from __future__ import annotations
 
 import gc
-import os
 import os.path as osp
 import random
 import sys
@@ -37,6 +36,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Add project root to path
 sys.path.insert(0, osp.dirname(osp.realpath(__file__)))
+
+from src.utils.logger import get_logger
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 # Disable OpenCV threading issues
 cv2.setNumThreads(0)
@@ -266,16 +270,21 @@ class InputValidator:
     
     def validate_image(self, image_path: str | Path | None) -> ValidationResult:
         """Validate the input image."""
+        logger.debug(f"Validating image: {image_path}")
+        
         if image_path is None:
+            logger.warning("No image provided for validation")
             return ValidationResult(False, "No image provided")
         
         path = Path(image_path)
         
         if not path.exists():
+            logger.error(f"Image file not found: {path}")
             return ValidationResult(False, f"Image file not found: {path}")
         
         ext = path.suffix.lower()
         if ext not in self.image_constraints.valid_extensions:
+            logger.error(f"Invalid image format: {ext}")
             return ValidationResult(
                 False,
                 f"Invalid image format: {ext}. Supported: {self.image_constraints.valid_extensions}"
@@ -284,6 +293,7 @@ class InputValidator:
         try:
             img = cv2.imread(str(path))
             if img is None:
+                logger.error(f"Failed to load image: {path}")
                 return ValidationResult(False, "Failed to load image")
             
             h, w = img.shape[:2]
@@ -291,30 +301,38 @@ class InputValidator:
             max_dim = self.image_constraints.max_dimension
             
             if h < min_dim or w < min_dim:
+                logger.error(f"Image too small: {w}x{h}, minimum: {min_dim}x{min_dim}")
                 return ValidationResult(
                     False,
                     f"Image too small ({w}x{h}). Minimum size: {min_dim}x{min_dim}"
                 )
             
             if h > max_dim or w > max_dim:
+                logger.error(f"Image too large: {w}x{h}, maximum: {max_dim}x{max_dim}")
                 return ValidationResult(
                     False,
                     f"Image too large ({w}x{h}). Maximum size: {max_dim}x{max_dim}"
                 )
                 
         except Exception as e:
+            logger.exception(f"Error reading image: {e}")
             return ValidationResult(False, f"Error reading image: {e}")
         
+        logger.debug(f"Image validation passed: {path} ({w}x{h})")
         return ValidationResult(True, "OK")
     
     def validate_audio(self, audio_path: str | Path | None) -> ValidationResult:
         """Validate the input audio and return duration."""
+        logger.debug(f"Validating audio: {audio_path}")
+        
         if audio_path is None:
+            logger.warning("No audio provided for validation")
             return ValidationResult(False, "No audio provided")
         
         path = Path(audio_path)
         
         if not path.exists():
+            logger.error(f"Audio file not found: {path}")
             return ValidationResult(False, f"Audio file not found: {path}")
         
         try:
@@ -322,6 +340,7 @@ class InputValidator:
             duration = len(audio) / sr
             
             if duration < self.audio_constraints.min_duration:
+                logger.error(f"Audio too short: {duration:.2f}s, minimum: {self.audio_constraints.min_duration}s")
                 return ValidationResult(
                     False,
                     f"Audio too short (minimum {self.audio_constraints.min_duration} seconds)",
@@ -329,6 +348,7 @@ class InputValidator:
                 )
             
             if duration > self.audio_constraints.max_duration:
+                logger.error(f"Audio too long: {duration:.2f}s, maximum: {self.audio_constraints.max_duration}s")
                 return ValidationResult(
                     False,
                     f"Audio too long (maximum {self.audio_constraints.max_duration / 60:.0f} minutes)",
@@ -336,8 +356,10 @@ class InputValidator:
                 )
                 
         except Exception as e:
+            logger.exception(f"Error reading audio: {e}")
             return ValidationResult(False, f"Error reading audio: {e}")
         
+        logger.debug(f"Audio validation passed: {path} (duration: {duration:.2f}s, sample_rate: {sr}Hz)")
         return ValidationResult(True, "OK", duration)
 
 
@@ -350,6 +372,7 @@ class AudioPreprocessor:
     
     def __init__(self, target_sample_rate: int = 16000):
         self.target_sample_rate = target_sample_rate
+        logger.debug(f"AudioPreprocessor initialized with target_sample_rate={target_sample_rate}")
     
     def process(self, audio_path: Path) -> Path:
         """
@@ -358,24 +381,30 @@ class AudioPreprocessor:
         Returns the original path if already in correct format,
         otherwise returns path to a temporary converted file.
         """
+        logger.debug(f"Processing audio: {audio_path}")
         try:
             audio, sr = librosa.load(str(audio_path), sr=None, mono=True)
+            logger.debug(f"Loaded audio: sample_rate={sr}Hz, samples={len(audio)}")
             
             # If already correct format, return as-is
             if sr == self.target_sample_rate and audio_path.suffix.lower() == ".wav":
+                logger.debug("Audio already in correct format, no conversion needed")
                 return audio_path
             
             # Resample if needed
             if sr != self.target_sample_rate:
+                logger.info(f"Resampling audio from {sr}Hz to {self.target_sample_rate}Hz")
                 audio = librosa.resample(audio, orig_sr=sr, target_sr=self.target_sample_rate)
             
             # Save to temporary WAV file
             temp_path = Path(tempfile.gettempdir()) / f"moda_audio_{int(time.time())}.wav"
             sf.write(str(temp_path), audio, self.target_sample_rate)
+            logger.debug(f"Audio saved to temporary file: {temp_path}")
             
             return temp_path
             
         except Exception as e:
+            logger.exception(f"Audio preprocessing failed: {e}")
             raise RuntimeError(f"Audio preprocessing failed: {e}") from e
 
 
@@ -420,28 +449,32 @@ class PipelineManager:
     
     def _load_pipeline(self) -> None:
         """Load the MoDA pipeline."""
-        print("=" * 60)
-        print("Loading MoDA pipeline... (this takes ~30-60 seconds)")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("Loading MoDA pipeline... (this takes ~30-60 seconds)")
+        logger.info("=" * 60)
         
         from src.models.inference.moda_test import LiveVASAPipeline
         
+        start_time = time.time()
         self._pipeline = LiveVASAPipeline(
             cfg_path=str(self.config.cfg_path),
             motion_mean_std_path=str(self.config.motion_mean_std_path)
         )
+        elapsed = time.time() - start_time
         
-        print("=" * 60)
-        print("Pipeline loaded successfully!")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info(f"Pipeline loaded successfully in {elapsed:.2f}s!")
+        logger.info("=" * 60)
     
     @staticmethod
     def clear_gpu_memory() -> None:
         """Clear GPU memory between generations."""
+        logger.debug("Clearing GPU memory")
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+            logger.debug("GPU memory cleared")
 
 
 # =============================================================================
@@ -499,11 +532,15 @@ class VideoGenerator:
         Returns:
             Path to generated video
         """
+        logger.info("Starting video generation")
+        logger.info(f"Parameters: emotion={emotion}, cfg_scale={cfg_scale}, seed={seed}, smooth={smooth_motion}")
+        
         context = None
         
         try:
             # Parse and validate parameters
             progress(0.05, desc="Validating inputs...")
+            logger.debug("Parsing and validating generation parameters")
             
             params = GenerationParams(
                 image_path=image_path,
@@ -519,37 +556,46 @@ class VideoGenerator:
             # Validate image
             image_result = self.validator.validate_image(params.image_path)
             if not image_result.is_valid:
+                logger.error(f"Image validation failed: {image_result.message}")
                 raise gr.Error(f"Image validation failed: {image_result.message}")
             
             # Validate audio
             audio_result = self.validator.validate_audio(params.audio_path)
             if not audio_result.is_valid:
+                logger.error(f"Audio validation failed: {audio_result.message}")
                 raise gr.Error(f"Audio validation failed: {audio_result.message}")
             
             duration = audio_result.duration
             est_time = max(30, duration * 2)
+            logger.info(f"Audio duration: {duration:.1f}s, estimated processing time: {est_time:.0f}s")
             progress(0.1, desc=f"Audio duration: {duration:.1f}s (est. {est_time:.0f}s to process)")
             
             # Preprocess audio
             progress(0.15, desc="Preprocessing audio...")
+            logger.debug("Preprocessing audio")
             processed_audio = self.audio_preprocessor.process(params.audio_path)
             if processed_audio != params.audio_path:
                 context.temp_audio_path = processed_audio
+                logger.debug(f"Audio preprocessed to: {processed_audio}")
             
             # Set seed
             set_seed(params.seed)
+            logger.debug(f"Random seed set to: {params.seed}")
             
             # Load pipeline
             progress(0.2, desc="Loading models...")
+            logger.debug("Loading pipeline models")
             pipeline = self.pipeline_manager.pipeline
             
             # Create output directory
             progress(0.25, desc="Extracting audio features...")
             save_dir = self.config.output_dir / f"cfg-{params.cfg_scale}-emo-{params.emotion.value}"
             save_dir.mkdir(parents=True, exist_ok=True)
+            logger.debug(f"Output directory: {save_dir}")
             
             # Generate video
             progress(0.3, desc="Generating motion sequence...")
+            logger.info("Starting motion sequence generation")
             
             video_path = pipeline.driven_sample(
                 image_path=str(params.image_path),
@@ -562,6 +608,7 @@ class VideoGenerator:
             )
             
             progress(0.95, desc="Finalizing video...")
+            logger.debug("Finalizing video output")
             
             # Check for final video path
             video_path = Path(video_path)
@@ -572,17 +619,19 @@ class VideoGenerator:
             elif video_path.exists():
                 context.output_path = video_path
             else:
+                logger.error("Video generation failed - output file not found")
                 raise gr.Error("Video generation failed - output file not found")
             
             progress(1.0, desc="Done!")
+            elapsed = context.elapsed_time
+            logger.info(f"Video generation completed in {elapsed:.2f}s: {context.output_path}")
             
             return str(context.output_path)
             
         except gr.Error:
             raise
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"Video generation failed with error: {e}")
             raise gr.Error(f"Generation failed: {str(e)}") from e
         
         finally:
@@ -643,9 +692,11 @@ class GradioInterface:
     """Builds and manages the Gradio web interface."""
     
     def __init__(self, config: AppConfig | None = None):
+        logger.debug("Initializing GradioInterface")
         self.config = config or AppConfig()
         self.generator = VideoGenerator(self.config)
         self.example_loader = ExampleLoader(self.config)
+        logger.debug("GradioInterface initialized")
     
     def build(self) -> gr.Blocks:
         """Build the Gradio interface."""
@@ -832,10 +883,15 @@ class GradioInterface:
 
 def main() -> None:
     """Application entry point."""
-    print("Starting MoDA Gradio App...")
+    logger.info("=" * 60)
+    logger.info("Starting MoDA Optimized Gradio App")
+    logger.info("=" * 60)
     
     config = AppConfig()
+    logger.info(f"Configuration loaded: server={config.server_name}:{config.server_port}, share={config.share}")
+    
     interface = GradioInterface(config)
+    logger.info("Launching Gradio interface...")
     interface.launch()
 
 

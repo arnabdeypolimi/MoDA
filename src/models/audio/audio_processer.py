@@ -25,11 +25,14 @@ from pydub import AudioSegment
 # from audio_separator.separator import Separator
 
 sys.path.append(osp.dirname(osp.dirname(osp.dirname(osp.dirname(osp.realpath(__file__))))))
-from src.utils.rprint import rlog as log
+from src.utils.logger import get_logger
 from src.utils.util import resample_audio
 
 from src.models.audio.wav2vec_modified import Wav2VecModel
 from src.models.audio.hubert import HubertModel
+
+# Initialize module logger
+logger = get_logger(__name__)
 
 
 def pad_audio(audio, audio_unit=320, pad_threshold=80):
@@ -83,8 +86,10 @@ class AudioProcessor(object):
         cfg = OmegaConf.load(cfg_path)
         self.cfg = cfg
         self.is_training = is_training
-        log("========================================= Audio Processer =========================================")
-        log(OmegaConf.to_yaml(cfg))
+        logger.info("=" * 40)
+        logger.info("Initializing Audio Processor")
+        logger.info("=" * 40)
+        logger.debug(f"Config:\n{OmegaConf.to_yaml(cfg)}")
 
         # setting device 
         self.device_id = cfg.device_params.device_id
@@ -133,7 +138,8 @@ class AudioProcessor(object):
         self.save_to_cpu = cfg.data_params.save_to_cpu
         self.pad_mode = cfg.data_params.audio_pad_mode
 
-        log("========================================= Audio Processer: Done =========================================")
+        logger.info("Audio Processor initialization complete")
+        logger.info("=" * 40)
         
     def load_model(self, model_name: str="wav2vec", model_type: str="base", is_chinese: bool = False):
         assert model_name in ["wav2vec", "hubert"], f"Unknown audio model {model_name}, only support wav2vec or hubert"
@@ -169,9 +175,9 @@ class AudioProcessor(object):
                 raise ValueError(f"model_weight_path is None")    
             audio_encoder = HubertModel.from_pretrained(model_weight_path, local_files_only=True).to(device=self.device)
 
-        log(f"{model_name}-{model_type}-chinese-{is_chinese} model has beed loaded from {model_weight_path}")
+        logger.info(f"Loaded {model_name}-{model_type} (chinese={is_chinese}) from: {model_weight_path}")
         total_params = sum(p.numel() for p in audio_encoder.parameters())
-        print('Number of parameter: % .4fM' % (total_params / 1e6))
+        logger.debug(f"Audio encoder parameters: {total_params / 1e6:.4f}M")
         
         # weights initialization
         audio_encoder.feature_extractor._freeze_parameters()
@@ -208,7 +214,7 @@ class AudioProcessor(object):
             assert self.audio_separator.model_instance is not None, "Fail to load audio separate model."
         else:
             self.audio_separator=None
-            log("Use audio directly without vocals seperator.")
+            logger.debug("Audio separator disabled, using audio directly")
     
     def seperate_audio(self, audio_path: str, output_dir: Union[str, None] = None) -> str:
         if output_dir is not None:
@@ -229,7 +235,7 @@ class AudioProcessor(object):
                 vocal_audio_file = os.path.join(self.audio_separator.output_dir, vocal_audio_file)
                 vocal_audio_file = resample_audio(vocal_audio_file, os.path.join(self.audio_separator.output_dir, f"{vocal_audio_name}-16k.wav"), self.sample_rate)
             except Exception as e:
-                log(f"Fail to separate vocals from {audio_path}, error info [{e}]")
+                logger.warning(f"Failed to separate vocals from {audio_path}: {e}")
                 vocal_audio_file=audio_path
         else:
             vocal_audio_file=audio_path
@@ -249,7 +255,7 @@ class AudioProcessor(object):
         clip_len = int(len(audio_data) / self.audio_unit)
         if n_frames is not None:
             if abs(n_frames - clip_len) > 2:
-                log(f"The number of frames must be close to the clip length (in 80ms), got {n_frames} and {clip_len}")
+                logger.warning(f"Frame count mismatch: expected ~{clip_len}, got {n_frames}")
                 return [], n_frames
             clip_len = n_frames
         else:
@@ -371,9 +377,9 @@ class AudioProcessor(object):
         audio_segments, n_frames = self.prepare_audio_data(audio_data, n_frames)
         audio_emb = self.get_audio_embeddings(audio_segments)
         if audio_emb is None:
-            log(f"{audio_path} has been processed, but no audio embedding, set as 'None'.")
-        #else:
-            #log(f"{audio_path} has been processed, audio embedding shape {audio_emb.shape}.") 
+            logger.warning(f"No audio embedding extracted from: {audio_path}")
+        else:
+            logger.debug(f"Audio embedding extracted: shape={audio_emb.shape}")
         return audio_emb, n_frames
     
     def preprocess_long(
@@ -389,7 +395,7 @@ class AudioProcessor(object):
             padding = (idx+1) == len(audio_list)
             emb, length = self.preprocess(audio_path, need_seperate=need_seperate)
             audio_emb_list.append(emb)
-            log(f"Processing audio {idx+1}/{len(audio_list)}, path: {audio_path} length: {length}")
+            logger.debug(f"Processing audio segment {idx+1}/{len(audio_list)}: {audio_path} (length={length})")
             l += length
         
         audio_emb = torch.cat(audio_emb_list)
