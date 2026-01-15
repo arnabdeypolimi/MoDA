@@ -393,7 +393,7 @@ def compute_face_landmarks(detection_result, h, w):
 
 def get_landmark(
     file, 
-    model_path="pretrain_weights/face/face_landmarker_v2_with_blendshapes.task"
+    model_path="pretrained_weights/face/face_landmarker_v2_with_blendshapes.task"
 ):
     """
     This function takes a file as input and returns the facial landmarks detected in the file.

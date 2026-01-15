@@ -31,21 +31,21 @@ Fan&nbsp;Wang<sup>1,3</sup> <br><br>
 
 * [2025.08.08] 🔥 We release our inference [codes](https://github.com/lixinyyang/MoDA/) and [models](https://huggingface.co/lixinyizju/moda/).
 
-## ⚙️ Installation
-
-**Create environment:**
+## ⚙️ Installation (UV)
 
 ```bash
-# 1. Create base environment
-conda create -n moda python=3.10 -y
-conda activate moda 
+# 1. Install UV (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. Install requirements
-pip install -r requirements.txt
+# 2. Create virtual environment and install dependencies
+uv sync
 
 # 3. Install ffmpeg
 sudo apt-get update  
 sudo apt-get install ffmpeg -y
+
+# 4. Activate the environment
+source .venv/bin/activate
 ```
 ## &#x1F680; Inference
 ```python

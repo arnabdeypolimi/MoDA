@@ -102,7 +102,7 @@ def generate_video(image_path, audio_path):
 
 # --- Gradio Interface ---
 # Using gr.Blocks for a custom layout
-with gr.Blocks(theme=gr.themes.Glass(), title="MODA Video Generator") as demo:
+with gr.Blocks(title="MODA Video Generator") as demo:
     gr.Markdown(
         """
         # 🎬 AI Video Generator (MODA)
@@ -136,4 +136,5 @@ with gr.Blocks(theme=gr.themes.Glass(), title="MODA Video Generator") as demo:
 # --- App Launch ---
 if __name__ == "__main__":
     # `share=True` is necessary for certain environments (e.g., Pinokio, Google Colab)
-    demo.launch(share=True)
+    # Note: theme moved to launch() in Gradio 6.0
+    demo.launch(share=True, theme=gr.themes.Glass())

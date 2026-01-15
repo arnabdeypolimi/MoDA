@@ -170,7 +170,7 @@ class AudioProcessor(object):
                     model_weight_path = self.cfg.model_weights.hubert_path.default.large
             if model_weight_path is None:
                 raise ValueError(f"model_weight_path is None")
-            audio_encoder = HubertModel.from_pretrained(model_weight_path, local_files_only=True).to(device=self.device)
+            audio_encoder = HubertModel.from_pretrained(model_weight_path, local_files_only=True, attn_implementation="eager").to(device=self.device)
 
         log(f"{model_name}-{model_type}-chinese-{is_chinese} model has beed loaded from {model_weight_path}")
         total_params = sum(p.numel() for p in audio_encoder.parameters())

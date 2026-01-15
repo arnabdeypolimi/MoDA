@@ -10,10 +10,10 @@ model_params:
 
 # model weights
 model_weights:
-  audio_separator_path: pretrain_weights/audio/audio_separator
+  audio_separator_path: /workspace/arnab/demo/MoDA/pretrained_weights/audio/audio_separator
   hubert_path:
     chinese:
-      base: pretrain_weights/audio/chinese-hubert-base
+      base: /workspace/arnab/demo/MoDA/pretrained_weights/audio/chinese-hubert-base
 # data settings
 data_params:
   sample_rate: 16000

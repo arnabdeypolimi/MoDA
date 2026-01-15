@@ -1,5 +1,5 @@
-insightface_root: pretrain_weights/decode/v1/insightface
-landmark_ckpt_path: pretrain_weights/decode/v1/first_stage/landmark.onnx
+insightface_root: pretrained_weights/decode/v1/insightface
+landmark_ckpt_path: pretrained_weights/decode/v1/first_stage/landmark.onnx
 xpose_config_file_path: src/utils/UniPose_SwinT.py
 device_id: 0                         # gpu device id
 flag_force_cpu: False                # force cpu inference, WIP

@@ -732,8 +732,8 @@ class MotionProcesser(object):
         f_s_s= f_s.expand(n_frames, *f_s.shape[1:]) 
         x_s_s = x_s.expand(n_frames, *x_s.shape[1:])  
         x_d_i_new = torch.cat(x_d_i_news, dim=0)        
-        for start in range(0, n_frames, 100):
-            end = min(start + 100,n_frames)
+        for start in range(0, n_frames, self.cfg.batch_size):
+            end = min(start + self.cfg.batch_size, n_frames)
             with torch.no_grad(), torch.autocast('cuda'):
                 out = self.warp_decode(f_s_s[start:end], x_s_s[start:end], x_d_i_new[start:end])        
                 I_p_lst.append(out['out'])
