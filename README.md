@@ -47,6 +47,19 @@ sudo apt-get install ffmpeg -y
 # 4. Activate the environment
 source .venv/bin/activate
 ```
+## 📥 Download Model Weights
+
+Download the weights from Hugging Face into `pretrained_weights`:
+
+```bash
+# 1. Install Git LFS (if not already installed)
+sudo apt-get update
+sudo apt-get install git-lfs -y
+git lfs install
+
+# 2. Clone the weights repo into ./pretrained_weights
+git clone https://huggingface.co/lixinyizju/moda pretrained_weights
+```
 ## &#x1F680; Inference
 ```python
 python src/models/inference/moda_test.py  --image_path src/examples/reference_images/6.jpg  --audio_path src/examples/driving_audios/5.wav 
